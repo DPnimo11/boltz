@@ -1,0 +1,142 @@
+BOLTZ2 BATCH RUN — SKIPPED LIGANDS & ULVSH COUNT REPORT
+=========================================================
+Generated: 2026-05-15
+Source logs: /work/jwang/boltz2/Boltz_output/_logs/<TARGET>.log
+Method: diffed input yaml IDs in _fixed_inputs/<T>/ against the per-ligand
+predictions/<ID>/ output dirs, then grepped each target's log for
+"Failed to process … Skipping." messages.
+
+
+1. THE 21 SKIPPED LIGANDS (912 → 891)
+-------------------------------------
+All 21 were rejected by boltz's pre-inference RDKit featurization step
+(SMILES parse + sanitization), BEFORE the model ever ran. None of them
+reached the embedding stage. Two root causes account for every skip:
+
+  (A) "Explicit valence for atom # N, 4, is greater than permitted"
+      RDKit refuses a neutral nitrogen drawn with 4 single bonds.
+      The SMILES should have been written as a charged [N+] (quaternary
+      ammonium / protonated amine), but came in as plain N. RDKit's
+      default sanitizer treats this as an invalid valence and rejects
+      the molecule. Count: 12 / 21.
+
+  (B) "Can't kekulize mol. Unkekulized atoms: …"
+      RDKit could not assign an alternating single/double bond pattern
+      to an aromatic ring system the SMILES marked as aromatic. Usually
+      means the input has aromatic-flagged atoms whose connectivity /
+      hydrogen count / charge state doesn't admit a valid Kekulé
+      structure (commonly a tautomer/protonation issue on N-containing
+      heteroaromatics, or a 5-membered ring missing an explicit H).
+      Count: 9 / 21.
+
+Per-target breakdown:
+
+  Target  Ligand ID            Failure mode          RDKit error detail
+  ------  -------------------  --------------------  ---------------------------
+  CNR1    ZINC000128725719     valence (4-bond N)    atom #17  N, valence 4
+
+  DRD4    ZINC000185593526     valence (4-bond N)    atom #0   N, valence 4
+  DRD4    ZINC000264073851     valence (4-bond N)    atom #6   N, valence 4
+  DRD4    ZINC000291023493     kekulization          atoms 3 4 5 11 12
+  DRD4    ZINC000301675210     kekulization          atoms 1 3 17 18 24
+  DRD4    ZINC000302699560     kekulization          atoms 11 12 13 19 20
+  DRD4    ZINC000340892636     valence (4-bond N)    atom #12  N, valence 4
+  DRD4    ZINC000363554822     kekulization          atoms 5 6 10 11 12
+  DRD4    ZINC000413345277     kekulization          atoms 1 2 3 4 5 7 8 20 21
+  DRD4    ZINC000624261462     kekulization          atoms 1 2 3 19 21
+  DRD4    ZINC000663410642     kekulization          atoms 7 8 9 14 15
+
+  MTR1A   ZINC000225749564     valence (4-bond N)    atom #17  N, valence 4
+  MTR1A   ZINC000596128269     valence (4-bond N)    atom #14  N, valence 4
+
+  ROCK1   mol_44               valence (4-bond N)    atom #26  N, valence 4
+
+  SC6A4   ZINC000378565724     valence (4-bond N)    atom #1   N, valence 4
+  SC6A4   ZINC000452112057     valence (4-bond N)    atom #17  N, valence 4
+
+  SGMR2   ZINC000170908795     valence (4-bond N)    atom #0   N, valence 4
+  SGMR2   ZINC000262856881     valence (4-bond N)    atom #6   N, valence 4
+  SGMR2   ZINC000269280100     valence (4-bond N)    atom #0   N, valence 4
+  SGMR2   ZINC000858362097     kekulization          atoms 3 5 7 8 10
+  SGMR2   ZINC001156463732     kekulization          atoms 10 11 12 13 17
+
+Total: 1 + 10 + 2 + 1 + 2 + 5 = 21  ✓  (matches PROJECT_NOTES section 5)
+
+How to recover (if any of these matter downstream):
+  - For the "valence 4-bond N" cases: edit the source SMILES so the
+    over-valent nitrogen is written as [N+] (and add the [-] counterion
+    or rely on net-charge handling) — i.e., it should have been drawn
+    as a protonated/quaternary nitrogen, not neutral.
+  - For the "kekulization" cases: re-export the SMILES from a clean
+    source (PubChem / canonical ZINC export), or use RDKit with
+    sanitize=False then a tautomer-canonicalization pass before
+    re-emitting. Usually a missing explicit H on a heteroaromatic N
+    or an inconsistent aromatic flag in the original SMILES.
+
+Both failure modes are upstream-data-quality issues, not bugs in the
+patched boltz2 code path.
+
+
+2. ULVSH COUNT DISCREPANCY: 943 vs 912
+--------------------------------------
+The 912 figure in PROJECT_NOTES section "Goal" is the count of WT
+(wild-type) input yamls across the 10 targets:
+
+  Target   wt    mut   shuffled
+  -------  ----  ----  --------
+  ADRA2B    13    44     44        ←  only target where wt != mut/shuffled
+  CASR      74    74     74
+  CNR1      46    46     46
+  CNR2      60    60     60
+  DRD3      33    33     33
+  DRD4     334   334    335        ←  one extra in shuffled only
+  MTR1A     38    38     38
+  ROCK1     69    69     69
+  SC6A4     35    35     35
+  SGMR2    210   210    210
+  -------  ----  ----  --------
+  TOTAL    912   943    944
+
+The ULVSH dataset (943) is the **mut subset count**, not the wt count.
+The 31-ligand gap (943 − 912 = 31) all comes from one target:
+
+  ADRA2B/mut and ADRA2B/shuffled each contain 44 ligand IDs, while
+  ADRA2B/wt contains only 13. The mut and shuffled sets for ADRA2B
+  are identical to each other (diff returns nothing), and all 13 wt
+  IDs are a strict subset of those 44 — so there are 31 extra ZINC
+  IDs in mut/shuffled that have no wt counterpart.
+
+The 31 extra ADRA2B IDs (present in mut/shuffled, absent from wt):
+
+  ZINC000004511922   ZINC000277785747   ZINC000760654964
+  ZINC000037658181   ZINC000308472964   ZINC000893821872
+  ZINC000051955264   ZINC000309615769   ZINC000895431854
+  ZINC000067217963   ZINC000335607886   ZINC001173879087
+  ZINC000070141158   ZINC000336765812   ZINC001174514167
+  ZINC000149781774   ZINC000386111627   ZINC001240651438
+  ZINC000220405343   ZINC000585297344   ZINC001240659121
+  ZINC000225502004   ZINC000639363607   ZINC001240663928
+  ZINC000277364411   ZINC000648153983   ZINC001240664622
+                     ZINC000683473927   ZINC001242282998
+                     ZINC000719898528
+                     ZINC000727469098
+
+13 wt + 31 extras = 44 ADRA2B mut/shuffled ligands.
+912 wt total + 31 ADRA2B-only extras = 943 mut total. ✓
+
+Likely upstream cause: when the wt/mut/shuffled ligand sets were
+generated for ADRA2B, the wt list was filtered (e.g., by an activity
+threshold, a curation pass, or PDB-cocrystal availability) but the
+mut and shuffled sets were taken from the unfiltered ADRA2B ligand
+pool. Every other target had identical IDs across wt/mut/shuffled,
+so ADRA2B is the lone outlier.
+
+Note: DRD4/shuffled also has one extra entry (335 vs 334 in wt/mut),
+so the shuffled grand total is 944, not 943. Only the mut total
+matches the reported 943 ULVSH figure.
+
+If 912 was intended to be the universe of ligands (across all
+variants), the fix is to either drop the 31 ADRA2B-only IDs from
+mut/shuffled, or to add wt yamls for them. If 943 is intended,
+PROJECT_NOTES section 0 should be updated to read "~912 wt
+ligands / 943 mut + shuffled ligands per variant".

@@ -1,0 +1,198 @@
+BOLTZ2 AFFINITY EMBEDDINGS — PROJECT NOTES
+============================================
+Last updated: 2026-05-15
+
+Goal: extract per-ligand affinity embeddings from boltz2 for downstream
+binding-affinity prediction across 10 GPCR/transporter targets
+(ADRA2B, CASR, CNR1, CNR2, DRD3, DRD4, MTR1A, ROCK1, SC6A4, SGMR2; ~912 wt ligands).
+
+
+1. BOLTZ2 SOURCE PATCH (editable install at /work/jwang/boltz2/boltz/)
+---------------------------------------------------------------------
+Stock boltz2 produces affinity embeddings inside `dict_out_affinity` but
+`boltz2.py:predict_step` drops them and `BoltzAffinityWriter` only writes
+the JSON summary. The embeddings exist only in-process and are lost.
+
+Patched files:
+  - boltz/src/boltz/model/modules/affinity.py
+      * `return_embeddings` now flows through to self.affinity_heads(...)
+      * removed unconditional debug `print` block and a commented-out raise
+  - boltz/src/boltz/model/models/boltz2.py
+      * ensemble path (affinity_module1 / affinity_module2) and the
+        single-module path both call affinity with return_embeddings=True
+      * embeddings forwarded through dict_out and predict_step
+  - BoltzAffinityWriter
+      * now writes affinity_embeddings_<id>.npz and pre_affinity_<id>.npz
+        alongside the existing JSON
+
+old_affinity.py is a byte-identical backup of the original HEAD affinity.py
+from before the patch — does NOT need to be copied to a fork.
+
+Per-ligand outputs of interest:
+  - affinity_embeddings_<id>.npz   (post-head; the "affinity embeddings")
+  - pre_affinity_<id>.npz          (pre-head)
+
+
+2. ENVIRONMENT GOTCHAS (high-priority)
+--------------------------------------
+2a. unset PYTHONPATH and LD_LIBRARY_PATH before invoking boltz.
+
+    Why: system PYTHONPATH includes
+      /usr/local/amber22/lib/python3.10/site-packages/
+    which contains a Python 3.10 stub `mpi4py` with no MPI submodule.
+    PyTorch Lightning probes for an MPI cluster on startup
+    (`from mpi4py import MPI`), the import raises, Lightning crashes.
+
+    Symptom seen: all 10 GPU runs died with rc=1 on identical mpi4py
+    tracebacks until this was fixed. The original Boltz2.job had
+    `unset PYTHONPATH` for this exact reason.
+
+    Fix in runners: prepend
+        unset PYTHONPATH
+        unset LD_LIBRARY_PATH
+    or use: env -u PYTHONPATH -u LD_LIBRARY_PATH boltz predict ...
+
+2b. The conda env's `boltz` entrypoint points to the WRONG install.
+
+    `which boltz` resolves into /work/hat170/aptamer/boltz/, NOT the
+    patched install at /work/jwang/boltz2/boltz/. Running just `boltz`
+    from PATH silently uses unpatched code and produces no embedding
+    .npz files.
+
+    Workaround: invoke via the patched package
+        python -m boltz.main predict ...
+    Or ensure /work/jwang/boltz2/boltz/ is the active editable install.
+    First check when "embeddings not appearing": `which boltz`.
+
+
+3. MSA BOTTLENECK & PRECOMPUTE FIX
+----------------------------------
+Default boltz regenerates the MSA per input yaml even though every yaml
+in a target shares the same protein sequence. With 912 ligands across
+10 targets that meant 912 colabfold MSA jobs — all rate-limited.
+
+First attempt: ZERO predictions in 1 hour, 75k+ rate-limit sleep events.
+
+Fix script: /work/jwang/boltz2/precompute_msa.py
+  - runs colabfold serially once per unique protein sequence (10 total)
+  - writes MSAs to /work/jwang/boltz2/Boltz_output/_msa/ (~60 MB total)
+  - rewrites every yaml to reference its precomputed MSA file
+  - confirmed each of the 10 targets has exactly 1 unique protein seq
+
+After precompute: zero RATELIMITs in MSA stage, inference proceeds normally.
+
+Rule: never run `boltz predict` on a new batch without confirming the
+yamls reference precomputed MSAs.
+
+
+4. INPUT YAML QUIRKS (sanitize_inputs.py is the canonical fix)
+--------------------------------------------------------------
+Original Boltz_ligands/<TARGET>/wt/input/ yamls had:
+
+  Target  Issue                                                Affected
+  ------  -------------------------------------------------    --------
+  CASR    protein `sequence:` split across 2 lines without     74 / 74
+          a block-scalar marker — YAML can't parse
+  CNR1    missing space after `sequence:` (e.g.                46 / 46
+          `sequence:MKSI...`)
+  DRD4    stray `boltz.job` file in input/ — boltz scans       1 stray
+          the dir, sees non-yaml, fails the whole target
+  ROCK1   stray `go` file in input/                            1 stray
+
+Fix script: /work/jwang/boltz2/sanitize_inputs.py
+  - rewrites yamls into /work/jwang/boltz2/Boltz_output/_fixed_inputs/<TARGET>/
+  - re-parses every output yaml to confirm it loads
+  - drops the 2 stray non-yaml files
+
+After sanitization: all 912 yamls parse cleanly.
+
+Future ligand additions may carry the same formatting drift — always
+run sanitize → precompute MSA → predict; do not run boltz directly
+against Boltz_ligands/<TARGET>/wt/input/.
+
+
+5. BATCH RUN RESULTS (2026-05-15)
+---------------------------------
+891 / 912 predictions succeeded. Wall time: 3h 39min on 4× RTX 6000 Ada
+(one target per GPU at a time).
+
+  Target   Inputs  Done  Skipped  Notes
+  -------  ------  ----  -------  -----------------------------
+  ADRA2B      13    13       0
+  CASR        74    74       0
+  CNR1        46    45       1
+  CNR2        60    60       0
+  DRD3        33    33       0
+  DRD4       334   324      10
+  MTR1A       38    36       2
+  ROCK1       69    68       1   (mol_44 missing from outputs)
+  SC6A4       35    33       2
+  SGMR2      210   205       5
+  TOTAL      912   891      21
+
+The 21 skips are at the LIGAND level (likely bad SMILES / RDKit parse
+failures during boltz's pre-inference featurization), not at the
+embedding stage — when inference completes, embeddings are always
+written. No central skipped manifest yet; to identify specific
+ligands, diff input yaml IDs against output folder names per target.
+
+Transient noise during this run: several Anthropic API 529 Overloaded
+messages — server-side, unrelated to boltz.
+
+
+6. POST-RUN AGGREGATION (today, 2026-05-15)
+-------------------------------------------
+For convenience, the per-ligand affinity_embeddings_*.npz files were
+gathered in two layers:
+
+  (a) per target:
+      Boltz_output/<TARGET>/boltz_results_<TARGET>/predictions/affinity_embeddings_all/
+      Each contains a copy (not a move) of every
+      affinity_embeddings_<ligand>.npz from that target's per-ligand
+      folders. Originals untouched.
+
+  (b) combined at the Boltz_output root:
+      Boltz_output/affinity_embeddings_combined/<TARGET>/*.npz
+      891 files total, 3.6 MB total. Subfolder-per-target layout was
+      chosen over flat-with-prefix to keep ligand IDs unambiguous and
+      provenance clear.
+
+
+7. KEY PATHS
+------------
+Source / scripts:
+  /work/jwang/boltz2/boltz/                  patched editable install
+  /work/jwang/boltz2/precompute_msa.py       per-target MSA generator
+  /work/jwang/boltz2/sanitize_inputs.py      yaml fixup + stray drop
+  /work/jwang/boltz2/run_boltz_batch.sh      batch runner (4 GPUs)
+  /work/jwang/boltz2/run_boltz_all.sh        outer driver
+  /work/jwang/boltz2/new_affinity.py         (analysis helper)
+  /work/jwang/boltz2/PROJECT_NOTES.txt       this file
+
+Data:
+  /work/jwang/boltz2/Boltz_ligands/<T>/wt/input/*.yaml      raw inputs
+  /work/jwang/boltz2/Boltz_output/_fixed_inputs/<T>/*.yaml  sanitized
+  /work/jwang/boltz2/Boltz_output/_msa/                     precomputed MSAs (~60 MB)
+  /work/jwang/boltz2/Boltz_output/<T>/boltz_results_<T>/predictions/<LIGAND>/
+                                                            per-ligand outputs
+  /work/jwang/boltz2/Boltz_output/<T>/boltz_results_<T>/predictions/affinity_embeddings_all/
+                                                            per-target gathered embeddings
+  /work/jwang/boltz2/Boltz_output/affinity_embeddings_combined/<T>/
+                                                            top-level combined embeddings
+
+Logs:
+  /work/jwang/boltz2/Boltz_output/_logs/                    per-target run logs
+  /work/jwang/boltz2/Boltz_output/_master.log               batch summary
+  /work/jwang/boltz2/Boltz_output/_msa_precompute.log       MSA precompute log
+
+
+8. PIPELINE CHECKLIST FOR NEW LIGANDS / TARGETS
+-----------------------------------------------
+  1. Drop new yamls (or new target) under Boltz_ligands/<T>/wt/input/
+  2. Run sanitize_inputs.py  →  writes _fixed_inputs/<T>/
+  3. Run precompute_msa.py   →  generates MSA in _msa/, injects ref
+  4. Verify `which boltz` resolves into /work/jwang/boltz2/boltz/
+     (or invoke via `python -m boltz.main` in the runner)
+  5. Runner MUST `unset PYTHONPATH; unset LD_LIBRARY_PATH` before boltz
+  6. After run: gather embeddings into predictions/affinity_embeddings_all/
+     and into Boltz_output/affinity_embeddings_combined/<T>/
