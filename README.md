@@ -51,6 +51,14 @@ boltz predict input_path --use_msa_server
 ### Binding Affinity Prediction
 There are two main predictions in the affinity output: `affinity_pred_value` and `affinity_probability_binary`. They are trained on largely different datasets, with different supervisions, and should be used in different contexts. The `affinity_probability_binary` field should be used to detect binders from decoys, for example in a hit-discovery stage. Its value ranges from 0 to 1 and represents the predicted probability that the ligand is a binder. The `affinity_pred_value` aims to measure the specific affinity of different binders and how this changes with small modifications of the molecule. This should be used in ligand optimization stages such as hit-to-lead and lead-optimization. It reports a binding affinity value as `log10(IC50)`, derived from an `IC50` measured in `μM`. More details on how to run affinity predictions and parse the output can be found in our [prediction instructions](docs/prediction.md).
 
+#### Affinity Embeddings (this fork)
+In addition to the scalar affinity predictions, this fork also exports the internal affinity-module embeddings that feed into the final prediction heads, for use as features in downstream affinity models. For each prediction, an `affinity_embeddings_{record_id}.npz` file is written next to `affinity_{record_id}.json` with the following arrays:
+
+- `affinity_embedding_pair_mean` — the pooled interface pair representation (mean over the receptor–ligand cross-pair mask), shape `[batch * multiplicity, token_z]`. Taken *before* the final affinity MLP.
+- `affinity_embedding_head` — the same representation *after* the `affinity_out_mlp`, i.e. the exact vector consumed by the `to_affinity_pred_value` / `to_affinity_pred_score` heads, shape `[batch * multiplicity, input_token_s]`.
+
+When the two-model affinity ensemble is used, both models' embeddings are saved with `1` / `2` suffixes (`affinity_embedding_pair_mean1`, `affinity_embedding_head1`, `affinity_embedding_pair_mean2`, `affinity_embedding_head2`).
+
 ## Authentication to MSA Server
 
 When using the `--use_msa_server` option with a server that requires authentication, you can provide credentials in one of two ways. More information is available in our [prediction instructions](docs/prediction.md).
