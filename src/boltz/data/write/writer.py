@@ -326,12 +326,31 @@ class BoltzAffinityWriter(BasePredictionWriter):
             )
 
         # Save the affinity summary
-        struct_dir = self.output_dir / batch["record"][0].id
+        record_id = batch["record"][0].id
+        struct_dir = self.output_dir / record_id
         struct_dir.mkdir(exist_ok=True)
-        path = struct_dir / f"affinity_{batch['record'][0].id}.json"
+        path = struct_dir / f"affinity_{record_id}.json"
 
         with path.open("w") as f:
             f.write(json.dumps(affinity_summary, indent=4))
+
+        # Save the affinity embeddings (used for downstream affinity prediction).
+        embedding_keys = [
+            "affinity_embedding_pair_mean",
+            "affinity_embedding_head",
+            "affinity_embedding_pair_mean1",
+            "affinity_embedding_head1",
+            "affinity_embedding_pair_mean2",
+            "affinity_embedding_head2",
+        ]
+        embeddings = {
+            k: prediction[k].detach().float().cpu().numpy()
+            for k in embedding_keys
+            if k in prediction
+        }
+        if embeddings:
+            emb_path = struct_dir / f"affinity_embeddings_{record_id}.npz"
+            np.savez_compressed(emb_path, **embeddings)
 
     def on_predict_epoch_end(
         self,

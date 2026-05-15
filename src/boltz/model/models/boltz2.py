@@ -634,6 +634,7 @@ class Boltz2(LightningModule):
                         feats=feats,
                         multiplicity=1,
                         use_kernels=self.use_kernels,
+                        return_embeddings=True,
                     )
 
                     dict_out_affinity1["affinity_probability_binary"] = (
@@ -648,6 +649,7 @@ class Boltz2(LightningModule):
                         feats=feats,
                         multiplicity=1,
                         use_kernels=self.use_kernels,
+                        return_embeddings=True,
                     )
                     dict_out_affinity2["affinity_probability_binary"] = (
                         torch.nn.functional.sigmoid(
@@ -675,6 +677,12 @@ class Boltz2(LightningModule):
                         "affinity_probability_binary1": dict_out_affinity1[
                             "affinity_probability_binary"
                         ],
+                        "affinity_embedding_pair_mean1": dict_out_affinity1[
+                            "affinity_embedding_pair_mean"
+                        ],
+                        "affinity_embedding_head1": dict_out_affinity1[
+                            "affinity_embedding_head"
+                        ],
                     }
                     dict_out_affinity2 = {
                         "affinity_pred_value2": dict_out_affinity2[
@@ -682,6 +690,12 @@ class Boltz2(LightningModule):
                         ],
                         "affinity_probability_binary2": dict_out_affinity2[
                             "affinity_probability_binary"
+                        ],
+                        "affinity_embedding_pair_mean2": dict_out_affinity2[
+                            "affinity_embedding_pair_mean"
+                        ],
+                        "affinity_embedding_head2": dict_out_affinity2[
+                            "affinity_embedding_head"
                         ],
                     }
                     if self.affinity_mw_correction:
@@ -707,6 +721,7 @@ class Boltz2(LightningModule):
                         feats=feats,
                         multiplicity=1,
                         use_kernels=self.use_kernels,
+                        return_embeddings=True,
                     )
                     dict_out.update(
                         {
@@ -716,6 +731,12 @@ class Boltz2(LightningModule):
                             "affinity_probability_binary": torch.nn.functional.sigmoid(
                                 dict_out_affinity["affinity_logits_binary"]
                             ),
+                            "affinity_embedding_pair_mean": dict_out_affinity[
+                                "affinity_embedding_pair_mean"
+                            ],
+                            "affinity_embedding_head": dict_out_affinity[
+                                "affinity_embedding_head"
+                            ],
                         }
                     )
 
@@ -1117,6 +1138,25 @@ class Boltz2(LightningModule):
                     pred_dict["affinity_pred_value2"] = out["affinity_pred_value2"]
                     pred_dict["affinity_probability_binary2"] = out[
                         "affinity_probability_binary2"
+                    ]
+                    pred_dict["affinity_embedding_pair_mean1"] = out[
+                        "affinity_embedding_pair_mean1"
+                    ]
+                    pred_dict["affinity_embedding_head1"] = out[
+                        "affinity_embedding_head1"
+                    ]
+                    pred_dict["affinity_embedding_pair_mean2"] = out[
+                        "affinity_embedding_pair_mean2"
+                    ]
+                    pred_dict["affinity_embedding_head2"] = out[
+                        "affinity_embedding_head2"
+                    ]
+                else:
+                    pred_dict["affinity_embedding_pair_mean"] = out[
+                        "affinity_embedding_pair_mean"
+                    ]
+                    pred_dict["affinity_embedding_head"] = out[
+                        "affinity_embedding_head"
                     ]
             return pred_dict
 

@@ -82,6 +82,7 @@ class AffinityModule(nn.Module):
         feats,
         multiplicity=1,
         use_kernels=False,
+        return_embeddings=False,
     ):
         z = self.z_linear(self.z_norm(z))
         z = z.repeat_interleave(multiplicity, 0)
@@ -94,6 +95,7 @@ class AffinityModule(nn.Module):
 
         token_to_rep_atom = feats["token_to_rep_atom"]
         token_to_rep_atom = token_to_rep_atom.repeat_interleave(multiplicity, 0)
+
         if len(x_pred.shape) == 4:
             B, mult, N, _ = x_pred.shape
             x_pred = x_pred.reshape(B * mult, N, -1)
@@ -101,6 +103,7 @@ class AffinityModule(nn.Module):
             BM, N, _ = x_pred.shape
             B = BM // multiplicity
             mult = multiplicity
+
         x_pred_repr = torch.bmm(token_to_rep_atom.float(), x_pred)
         d = torch.cdist(x_pred_repr, x_pred_repr)
 
@@ -110,19 +113,23 @@ class AffinityModule(nn.Module):
         z = z + self.pairwise_conditioner(z_trunk=z, token_rel_pos_feats=distogram)
 
         pad_token_mask = feats["token_pad_mask"].repeat_interleave(multiplicity, 0)
+
         rec_mask = (feats["mol_type"] == 0).repeat_interleave(multiplicity, 0)
         rec_mask = rec_mask * pad_token_mask
+
         lig_mask = (
             feats["affinity_token_mask"]
             .repeat_interleave(multiplicity, 0)
             .to(torch.bool)
         )
         lig_mask = lig_mask * pad_token_mask
+
         cross_pair_mask = (
             lig_mask[:, :, None] * rec_mask[:, None, :]
             + rec_mask[:, :, None] * lig_mask[:, None, :]
             + lig_mask[:, :, None] * lig_mask[:, None, :]
         )
+
         z = self.pairformer_stack(
             z,
             pair_mask=cross_pair_mask,
@@ -131,9 +138,14 @@ class AffinityModule(nn.Module):
 
         out_dict = {}
 
-        # affinity heads
+        # Affinity heads.
         out_dict.update(
-            self.affinity_heads(z=z, feats=feats, multiplicity=multiplicity)
+            self.affinity_heads(
+                z=z,
+                feats=feats,
+                multiplicity=multiplicity,
+                return_embeddings=return_embeddings,
+            )
         )
 
         return out_dict
@@ -151,6 +163,7 @@ class AffinityHeadsTransformer(nn.Module):
         groups={},
     ):
         super().__init__()
+
         self.affinity_out_mlp = nn.Sequential(
             nn.Linear(token_z, token_z),
             nn.ReLU(),
@@ -173,6 +186,7 @@ class AffinityHeadsTransformer(nn.Module):
             nn.ReLU(),
             nn.Linear(input_token_s, 1),
         )
+
         self.to_affinity_logits_binary = nn.Linear(1, 1)
 
     def forward(
@@ -180,20 +194,24 @@ class AffinityHeadsTransformer(nn.Module):
         z,
         feats,
         multiplicity=1,
+        return_embeddings=False,
     ):
         pad_token_mask = (
             feats["token_pad_mask"].repeat_interleave(multiplicity, 0).unsqueeze(-1)
         )
+
         rec_mask = (
             (feats["mol_type"] == 0).repeat_interleave(multiplicity, 0).unsqueeze(-1)
         )
         rec_mask = rec_mask * pad_token_mask
+
         lig_mask = (
             feats["affinity_token_mask"]
             .repeat_interleave(multiplicity, 0)
             .to(torch.bool)
             .unsqueeze(-1)
         ) * pad_token_mask
+
         cross_pair_mask = (
             lig_mask[:, :, None] * rec_mask[:, None, :]
             + rec_mask[:, :, None] * lig_mask[:, None, :]
@@ -205,19 +223,35 @@ class AffinityHeadsTransformer(nn.Module):
             .unsqueeze(0)
         )
 
-        g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
+        # This is the pooled pair/interface representation BEFORE the final affinity MLP.
+        # Shape: [batch_size * multiplicity, token_z]
+        g_pair_mean = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
             torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7
         )
 
-        g = self.affinity_out_mlp(g)
+        # This is the representation actually passed into the final scalar affinity heads.
+        # Shape: [batch_size * multiplicity, input_token_s]
+        g_head = self.affinity_out_mlp(g_pair_mean)
 
-        affinity_pred_value = self.to_affinity_pred_value(g).reshape(-1, 1)
-        affinity_pred_score = self.to_affinity_pred_score(g).reshape(-1, 1)
+        affinity_pred_value = self.to_affinity_pred_value(g_head).reshape(-1, 1)
+
+        affinity_pred_score = self.to_affinity_pred_score(g_head).reshape(-1, 1)
+
         affinity_logits_binary = self.to_affinity_logits_binary(
             affinity_pred_score
         ).reshape(-1, 1)
+
         out_dict = {
             "affinity_pred_value": affinity_pred_value,
             "affinity_logits_binary": affinity_logits_binary,
         }
+
+        if return_embeddings:
+            out_dict.update(
+                {
+                    "affinity_embedding_pair_mean": g_pair_mean,
+                    "affinity_embedding_head": g_head,
+                }
+            )
+
         return out_dict
