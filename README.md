@@ -59,6 +59,29 @@ In addition to the scalar affinity predictions, this fork also exports the inter
 
 When the two-model affinity ensemble is used, both models' embeddings are saved with `1` / `2` suffixes (`affinity_embedding_pair_mean1`, `affinity_embedding_head1`, `affinity_embedding_pair_mean2`, `affinity_embedding_head2`).
 
+#### Local Batch Utilities (this fork)
+
+This fork also includes root-level helpers for running the local GPCR/transporter ligand batch and collecting affinity embeddings. The scripts currently assume the project lives at `/work/jwang/boltz2`; update the `ROOT`, `LIG_ROOT`, and `OUT_ROOT` constants before using them in a different location.
+
+Recommended workflow for new WT ligands or targets:
+
+```bash
+python sanitize_inputs.py
+python precompute_msa.py
+bash run_boltz_batch.sh
+```
+
+The utility files are:
+
+| File | Purpose |
+| ---- | ------- |
+| `sanitize_inputs.py` | Copies `Boltz_ligands/<TARGET>/wt/input/*.yaml` into `Boltz_output/_fixed_inputs/<TARGET>/`, fixes known YAML formatting issues, skips stray non-YAML files, and validates the cleaned YAMLs. |
+| `precompute_msa.py` | Generates one ColabFold MSA per target in `Boltz_output/_msa/` and injects the resulting `msa:` path into every sanitized YAML so Boltz does not run redundant per-ligand MSA jobs. Optional target names can be passed as arguments to limit the run. |
+| `run_boltz_batch.sh` | Main multi-GPU runner for the sanitized/precomputed-MSA inputs. It writes outputs under `Boltz_output/<TARGET>/`, logs under `Boltz_output/_logs/`, enables `--write_embeddings`, and clears inherited Python library paths before invoking the patched Boltz install. |
+| `run_boltz_all.sh` | Simpler all-target WT runner over the raw `Boltz_ligands/<TARGET>/wt/input/` tree. Prefer `run_boltz_batch.sh` for the current sanitized/precomputed-MSA workflow. |
+| `PROJECT_NOTES.txt` | Operational runbook for this fork: source patch summary, environment gotchas, MSA strategy, batch results, aggregation layout, and checklist for new batches. |
+| `SKIPPED_LIGANDS_REPORT.txt` | Follow-up report explaining the 21 skipped ligands from the 912-ligand WT batch and the 943 vs. 912 ligand-count discrepancy. |
+
 ## Authentication to MSA Server
 
 When using the `--use_msa_server` option with a server that requires authentication, you can provide credentials in one of two ways. More information is available in our [prediction instructions](docs/prediction.md).
