@@ -1092,8 +1092,12 @@ class Boltz2(LightningModule):
 
             pred_dict["masks"] = batch["atom_pad_mask"]
             pred_dict["token_masks"] = batch["token_pad_mask"]
-            pred_dict["s"] = out["s"]
-            pred_dict["z"] = out["z"]
+            # z is O(N_tokens^2); only carry the trunk reps out when the writer
+            # will actually persist them, otherwise it inflates peak VRAM on
+            # every prediction for output that gets discarded.
+            if self.predict_args.get("write_embeddings", False):
+                pred_dict["s"] = out["s"]
+                pred_dict["z"] = out["z"]
 
             if "keys_dict_out" in self.predict_args:
                 for key in self.predict_args["keys_dict_out"]:
